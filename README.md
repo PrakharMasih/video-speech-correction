@@ -49,4 +49,4 @@ The `main` function sets up the Streamlit interface and orchestrates the entire 
 - Python libraries: streamlit, moviepy, openai, pydub, whisperx, torch, numpy
 - OpenAI API key (for GPT-4 and TTS)
 - CUDA-capable GPU (optional, for faster processing)
-- 
+  
