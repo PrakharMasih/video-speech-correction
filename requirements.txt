@@ -4,3 +4,4 @@ openai
 numpy
 ffmpeg-python
 pydub
+ffprobe
