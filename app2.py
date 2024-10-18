@@ -4,9 +4,10 @@ import os
 import json
 from moviepy.editor import VideoFileClip, AudioFileClip
 from openai import OpenAI, AuthenticationError
-from pydub import AudioSegment
 import numpy as np
 import re
+import ffmpeg
+from pydub import AudioSegment
 import subprocess
 import sys
 
@@ -35,9 +36,9 @@ def transcribe_audio(audio_file_path):
     client = st.session_state.openai_client
 
     # Convert audio to mp3 if it's not already
-    audio = AudioSegment.from_file(audio_file_path)
+    audio = AudioFileClip(audio_file_path)
     mp3_path = tempfile.mktemp(suffix=".mp3")
-    audio.export(mp3_path, format="mp3")
+    audio.write_audiofile(mp3_path)
 
     with open(mp3_path, "rb") as audio_file:
         transcript = client.audio.transcriptions.create(
@@ -178,8 +179,8 @@ def generate_speech_with_target_duration(
         temp_audio_path = tempfile.mktemp(suffix=".mp3")
         response.stream_to_file(temp_audio_path)
 
-        audio = AudioSegment.from_mp3(temp_audio_path)
-        current_duration = len(audio)
+        audio = AudioFileClip(temp_audio_path)
+        current_duration = audio.duration
 
         if abs(current_duration - target_duration) <= 100:
             return audio, temp_audio_path
@@ -272,79 +273,89 @@ def replace_audio(video_path, adjusted_audio):
     return output_path
 
 
-def install_ffmpeg():
-    try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "ffmpeg-python"])
-        subprocess.check_call(["apt-get", "update"])
-        subprocess.check_call(["apt-get", "install", "-y", "ffmpeg"])
-        return True
-    except subprocess.CalledProcessError:
-        return False
-
-
 def check_ffmpeg():
     try:
-        subprocess.run(["ffmpeg", "-version"], check=True, capture_output=True)
+        # Try to use ffmpeg-python to get version info
+        probe = ffmpeg.probe("dummy")
         return True
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except ffmpeg.Error:
         return False
+
+
+def extract_audio_from_video(video_file):
+    try:
+        # Create a temporary file for the extracted audio
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_audio:
+            temp_audio_path = temp_audio.name
+
+        # Use ffmpeg-python to extract audio
+        (
+            ffmpeg.input(video_file)
+            .output(temp_audio_path, acodec="pcm_s16le", ac=1, ar="16k")
+            .overwrite_output()
+            .run(capture_stdout=True, capture_stderr=True)
+        )
+
+        return temp_audio_path
+    except ffmpeg.Error as e:
+        st.error(f"Error extracting audio: {e.stderr.decode()}")
+        return None
 
 
 def main():
     st.title("Video Audio Transcription, Correction, and Replacement PoC")
 
     if not check_ffmpeg():
-        st.warning("FFmpeg not found. Attempting to install...")
-        if install_ffmpeg():
-            st.success("FFmpeg installed successfully!")
-        else:
-            st.error("Failed to install FFmpeg. Please contact the administrator.")
-            return
+        st.error(
+            "FFmpeg functionality is not available. Please check your ffmpeg-python installation."
+        )
+        return
 
     client = init_openai_client()
 
     if not client:
         return
 
-    uploaded_file = st.file_uploader("Choose a video file", type=["mp4", "avi", "mov"])
+    uploaded_file = st.file_uploader("Choose a video file", type=["mp4", "mov", "avi"])
 
     if uploaded_file is not None:
-        st.video(uploaded_file)
+        # Save the uploaded file temporarily
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_video:
+            temp_video.write(uploaded_file.read())
+            video_path = temp_video.name
 
-        if st.button("Process Video"):
-            with st.spinner("Processing..."):
-                tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-                tfile.write(uploaded_file.read())
-                video_path = tfile.name
+        # Extract audio using ffmpeg-python
+        audio_path = extract_audio_from_video(video_path)
 
-                video = VideoFileClip(video_path)
-                audio = video.audio
-                audio_path = tempfile.mktemp(suffix=".mp3")
-                audio.write_audiofile(audio_path)
+        if audio_path:
+            if st.button("Process Video"):
+                with st.spinner("Processing..."):
+                    transcription, words_with_timestamps = transcribe_audio(audio_path)
+                    st.text("Transcription:")
+                    st.write(transcription)
 
-                transcription, words_with_timestamps = transcribe_audio(audio_path)
-                st.text("Transcription:")
-                st.write(transcription, words_with_timestamps)
+                    corrected_text, adjusted_words_with_timestamps = correct_text(
+                        transcription, words_with_timestamps
+                    )
+                    st.text("Corrected Transcription:")
+                    st.write(corrected_text)
 
-                corrected_text, adjusted_words_with_timestamps = correct_text(
-                    transcription, words_with_timestamps
-                )
-                st.text("Corrected Transcription:")
-                st.write(corrected_text, adjusted_words_with_timestamps)
+                    adjusted_audio = text_to_speech_and_adjust(
+                        corrected_text, adjusted_words_with_timestamps
+                    )
+                    output_video_path = replace_audio(video_path, adjusted_audio)
 
-                adjusted_audio = text_to_speech_and_adjust(
-                    corrected_text, adjusted_words_with_timestamps
-                )
-                output_video_path = replace_audio(video_path, adjusted_audio)
+                    st.success("Video processing complete!")
+                    st.video(output_video_path)
 
-                st.success("Video processing complete!")
-                st.video(output_video_path)
+                    st.text("Please try again if quality is bad")
 
-                st.text("Please try again if quality is bad")
-
-                os.unlink(video_path)
-                os.unlink(audio_path)
-                os.unlink(output_video_path)
+                    # Clean up temporary files
+                    os.unlink(video_path)
+                    os.unlink(audio_path)
+                    os.unlink(output_video_path)
+        else:
+            st.error("Failed to extract audio from the video.")
 
 
 if __name__ == "__main__":
