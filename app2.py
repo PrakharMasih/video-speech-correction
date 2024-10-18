@@ -301,13 +301,13 @@ def main():
                 with st.spinner("Processing..."):
                     transcription, words_with_timestamps = transcribe_audio(audio_path)
                     st.text("Transcription:")
-                    st.write(transcription)
+                    st.write(transcription, words_with_timestamps)
 
                     corrected_text, adjusted_words_with_timestamps = correct_text(
                         transcription, words_with_timestamps
                     )
                     st.text("Corrected Transcription:")
-                    st.write(corrected_text)
+                    st.write(corrected_text, adjusted_words_with_timestamps )
 
                     adjusted_audio = text_to_speech_and_adjust(
                         corrected_text, adjusted_words_with_timestamps
