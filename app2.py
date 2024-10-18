@@ -5,9 +5,6 @@ import json
 from moviepy.editor import VideoFileClip, AudioFileClip
 from openai import OpenAI, AuthenticationError
 from pydub import AudioSegment
-import whisperx
-import gc
-import torch
 import numpy as np
 import re
 
@@ -31,50 +28,65 @@ def init_openai_client():
     return st.session_state.get("openai_client")
 
 
+@st.cache_data
 def transcribe_audio(audio_file_path):
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    compute_type = "float16" if torch.cuda.is_available() else "int8"
+    client = st.session_state.openai_client
 
-    model = whisperx.load_model("large-v2", device, compute_type=compute_type)
-    audio = whisperx.load_audio(audio_file_path)
-    result = model.transcribe(audio, batch_size=16)
+    # Convert audio to mp3 if it's not already
+    audio = AudioSegment.from_file(audio_file_path)
+    mp3_path = tempfile.mktemp(suffix=".mp3")
+    audio.export(mp3_path, format="mp3")
 
-    model_a, metadata = whisperx.load_align_model(
-        language_code=result["language"], device=device
-    )
-    result = whisperx.align(
-        result["segments"],
-        model_a,
-        metadata,
-        audio,
-        device,
-        return_char_alignments=False,
-    )
+    with open(mp3_path, "rb") as audio_file:
+        transcript = client.audio.transcriptions.create(
+            model="whisper-1", file=audio_file, response_format="verbose_json"
+        )
 
-    del model, model_a
-    gc.collect()
-    torch.cuda.empty_cache()
+    os.remove(mp3_path)  # Clean up temporary file
 
     words_with_timestamps = []
     full_transcription = ""
-    for segment in result["segments"]:
-        full_transcription += segment["text"] + " "
-        for word in segment["words"]:
-            words_with_timestamps.append(
-                {
-                    "word": word["word"],
-                    "start": word.get("start", segment["start"]),
-                    "end": word.get("end", segment["end"]),
-                }
-            )
+
+    for segment in transcript.segments:
+        full_transcription += segment.text + " "
+
+        # If word-level timestamps are available
+        if hasattr(segment, "words") and segment.words:
+            for word in segment.words:
+                words_with_timestamps.append(
+                    {
+                        "word": word.word,
+                        "start": word.start,
+                        "end": word.end,
+                    }
+                )
+        else:
+            # Fallback: Distribute words evenly across the segment duration
+            words = segment.text.split()
+            segment_duration = segment.end - segment.start
+            word_duration = segment_duration / len(words)
+
+            for i, word in enumerate(words):
+                start = segment.start + i * word_duration
+                end = start + word_duration
+                words_with_timestamps.append(
+                    {
+                        "word": word,
+                        "start": start,
+                        "end": end,
+                    }
+                )
 
     return full_transcription.strip(), words_with_timestamps
 
 
+@st.cache_data
 def correct_text(text, words_with_timestamps):
     client = st.session_state.openai_client
+
+    # First API
     response = client.chat.completions.create(
-        model="gpt-4",
+        model="gpt-4-1106-preview",
         messages=[
             {
                 "role": "system",
@@ -88,12 +100,14 @@ def correct_text(text, words_with_timestamps):
     )
     corrected_text = response.choices[0].message.content.strip()
 
+    # Second API call for timestamp adjustment
     response = client.chat.completions.create(
-        model="gpt-4",
+        model="gpt-4-1106-preview",
+        response_format={"type": "json_object"},
         messages=[
             {
                 "role": "system",
-                "content": "You are an expert in audio transcription and timestamp correction, specializing in creating perfectly timed transcripts for text-to-speech generation.",
+                "content": "You are an expert in audio transcription and timestamp correction, specializing in creating perfectly timed transcripts for text-to-speech generation. Your responses should always be in valid JSON format.",
             },
             {
                 "role": "user",
@@ -128,7 +142,24 @@ def correct_text(text, words_with_timestamps):
         ],
     )
 
-    response_json = json.loads(response.choices[0].message.content)
+    try:
+        response_json = json.loads(response.choices[0].message.content)
+    except json.JSONDecodeError:
+        st.error(
+            "Failed to parse JSON response from OpenAI API. Using original text and timestamps."
+        )
+        return text, words_with_timestamps
+
+    if (
+        not isinstance(response_json, dict)
+        or "text" not in response_json
+        or "words" not in response_json
+    ):
+        st.error(
+            "Invalid JSON structure in OpenAI API response. Using original text and timestamps."
+        )
+        return text, words_with_timestamps
+
     return response_json["text"], response_json["words"]
 
 
@@ -265,13 +296,13 @@ def main():
 
                 transcription, words_with_timestamps = transcribe_audio(audio_path)
                 st.text("Transcription:")
-                st.write(transcription)
+                st.write(transcription, words_with_timestamps)
 
                 corrected_text, adjusted_words_with_timestamps = correct_text(
                     transcription, words_with_timestamps
                 )
                 st.text("Corrected Transcription:")
-                st.write(corrected_text)
+                st.write(corrected_text, adjusted_words_with_timestamps)
 
                 adjusted_audio = text_to_speech_and_adjust(
                     corrected_text, adjusted_words_with_timestamps
