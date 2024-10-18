@@ -8,6 +8,7 @@ from pydub import AudioSegment
 import numpy as np
 import re
 import subprocess
+import sys
 
 
 def init_openai_client():
@@ -271,6 +272,16 @@ def replace_audio(video_path, adjusted_audio):
     return output_path
 
 
+def install_ffmpeg():
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "ffmpeg-python"])
+        subprocess.check_call(["apt-get", "update"])
+        subprocess.check_call(["apt-get", "install", "-y", "ffmpeg"])
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+
 def check_ffmpeg():
     try:
         subprocess.run(["ffmpeg", "-version"], check=True, capture_output=True)
@@ -283,10 +294,12 @@ def main():
     st.title("Video Audio Transcription, Correction, and Replacement PoC")
 
     if not check_ffmpeg():
-        st.error(
-            "FFmpeg is not installed or not found in the system path. Please make sure FFmpeg is properly installed."
-        )
-        return
+        st.warning("FFmpeg not found. Attempting to install...")
+        if install_ffmpeg():
+            st.success("FFmpeg installed successfully!")
+        else:
+            st.error("Failed to install FFmpeg. Please contact the administrator.")
+            return
 
     client = init_openai_client()
 
