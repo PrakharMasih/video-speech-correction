@@ -2,12 +2,14 @@ import streamlit as st
 import tempfile
 import os
 import json
-from moviepy.editor import VideoFileClip, AudioFileClip
+from moviepy.editor import VideoFileClip, AudioFileClip, CompositeAudioClip
 from openai import OpenAI, AuthenticationError
 import numpy as np
 import re
 import ffmpeg
-from pydub import AudioSegment
+
+# Remove the pydub import
+# from pydub import AudioSegment
 
 
 def init_openai_client():
@@ -180,7 +182,7 @@ def generate_speech_with_target_duration(
         audio = AudioFileClip(temp_audio_path)
         current_duration = audio.duration
 
-        if abs(current_duration - target_duration) <= 100:
+        if abs(current_duration - target_duration) <= 0.1:
             return audio, temp_audio_path
 
         speed_ratio = current_duration / target_duration
@@ -207,67 +209,40 @@ def text_to_speech_and_adjust(corrected_text, adjusted_words_with_timestamps):
         sentence_groups.append((sentences[-1], current_sentence))
 
     last_word = adjusted_words_with_timestamps[-1]
-    final_audio = AudioSegment.silent(duration=int(last_word["end"] * 1000))
+    final_duration = last_word["end"]
+    audio_clips = []
 
     for sentence, words_in_sentence in sentence_groups:
-        start_ms = int(words_in_sentence[0]["start"] * 1000)
-        end_ms = int(words_in_sentence[-1]["end"] * 1000)
-        target_duration = end_ms - start_ms
+        start = words_in_sentence[0]["start"]
+        end = words_in_sentence[-1]["end"]
+        target_duration = end - start
 
         sentence_audio, temp_audio_path = generate_speech_with_target_duration(
             client, sentence, target_duration
         )
 
-        sentence_audio = sentence_audio.fade_out(50)
-        final_audio = final_audio.overlay(sentence_audio, position=start_ms)
+        # Apply fade out
+        sentence_audio = sentence_audio.audio_fadeout(0.05)
+
+        # Set the start time for this audio clip
+        audio_clips.append(sentence_audio.set_start(start))
+
         os.remove(temp_audio_path)
 
-    return compress_dynamic_range(final_audio)
+    # Combine all audio clips
+    final_audio = CompositeAudioClip(audio_clips)
+    final_audio = final_audio.set_duration(final_duration)
 
-
-def compress_dynamic_range(
-    audio, threshold=-20.0, ratio=4.0, attack_ms=5.0, release_ms=50.0
-):
-    samples = np.array(audio.get_array_of_samples()).astype(np.float32) / 32768.0
-    envelope = np.zeros_like(samples)
-    attack = np.exp(-1 / (audio.frame_rate * attack_ms / 1000))
-    release = np.exp(-1 / (audio.frame_rate * release_ms / 1000))
-
-    for i in range(len(samples)):
-        envelope[i] = (
-            max(abs(samples[i]), envelope[i - 1] * release)
-            if i > 0
-            else abs(samples[i])
-        )
-
-    gain = np.ones_like(samples)
-    mask = envelope > 10 ** (threshold / 20)
-    gain[mask] = (10 ** (threshold / 20) / envelope[mask]) ** (1 - 1 / ratio)
-
-    compressed = samples * gain
-    compressed = compressed / np.max(np.abs(compressed))
-    compressed = (compressed * 32767).astype(np.int16)
-
-    return AudioSegment(
-        compressed.tobytes(),
-        frame_rate=audio.frame_rate,
-        sample_width=audio.sample_width,
-        channels=audio.channels,
-    )
+    return final_audio
 
 
 def replace_audio(video_path, adjusted_audio):
     video = VideoFileClip(video_path)
-    final_audio_path = tempfile.mktemp(suffix=".mp3")
-    adjusted_audio.export(final_audio_path, format="mp3")
-
-    video_with_new_audio = video.set_audio(AudioFileClip(final_audio_path))
+    video_with_new_audio = video.set_audio(adjusted_audio)
     output_path = tempfile.mktemp(suffix=".mp4")
     video_with_new_audio.write_videofile(
         output_path, codec="libx264", audio_codec="aac"
     )
-
-    os.remove(final_audio_path)
     return output_path
 
 
