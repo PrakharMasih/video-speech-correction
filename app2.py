@@ -7,6 +7,7 @@ from openai import OpenAI, AuthenticationError
 from pydub import AudioSegment
 import numpy as np
 import re
+import subprocess
 
 
 def init_openai_client():
@@ -270,8 +271,22 @@ def replace_audio(video_path, adjusted_audio):
     return output_path
 
 
+def check_ffmpeg():
+    try:
+        subprocess.run(["ffmpeg", "-version"], check=True, capture_output=True)
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+
 def main():
     st.title("Video Audio Transcription, Correction, and Replacement PoC")
+
+    if not check_ffmpeg():
+        st.error(
+            "FFmpeg is not installed or not found in the system path. Please make sure FFmpeg is properly installed."
+        )
+        return
 
     client = init_openai_client()
 
