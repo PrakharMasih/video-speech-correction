@@ -8,8 +8,6 @@ import numpy as np
 import re
 import ffmpeg
 from pydub import AudioSegment
-import subprocess
-import sys
 
 
 def init_openai_client():
@@ -275,8 +273,9 @@ def replace_audio(video_path, adjusted_audio):
 
 def check_ffmpeg():
     try:
-        # Try to use ffmpeg-python to get version info
-        probe = ffmpeg.probe("dummy")
+        # Try to use ffmpeg-python to run a simple ffmpeg command
+        stream = ffmpeg.input("dummy.mp4").output("dummy.mp3")
+        ffmpeg.compile(stream)
         return True
     except ffmpeg.Error:
         return False
@@ -288,17 +287,13 @@ def extract_audio_from_video(video_file):
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_audio:
             temp_audio_path = temp_audio.name
 
-        # Use ffmpeg-python to extract audio
-        (
-            ffmpeg.input(video_file)
-            .output(temp_audio_path, acodec="pcm_s16le", ac=1, ar="16k")
-            .overwrite_output()
-            .run(capture_stdout=True, capture_stderr=True)
-        )
+        # Use moviepy to extract audio instead of ffmpeg-python
+        video = VideoFileClip(video_file)
+        video.audio.write_audiofile(temp_audio_path)
 
         return temp_audio_path
-    except ffmpeg.Error as e:
-        st.error(f"Error extracting audio: {e.stderr.decode()}")
+    except Exception as e:
+        st.error(f"Error extracting audio: {str(e)}")
         return None
 
 
@@ -306,10 +301,9 @@ def main():
     st.title("Video Audio Transcription, Correction, and Replacement PoC")
 
     if not check_ffmpeg():
-        st.error(
-            "FFmpeg functionality is not available. Please check your ffmpeg-python installation."
+        st.warning(
+            "FFmpeg functionality might be limited. Some features may not work as expected."
         )
-        return
 
     client = init_openai_client()
 
@@ -324,7 +318,7 @@ def main():
             temp_video.write(uploaded_file.read())
             video_path = temp_video.name
 
-        # Extract audio using ffmpeg-python
+        # Extract audio using moviepy
         audio_path = extract_audio_from_video(video_path)
 
         if audio_path:
