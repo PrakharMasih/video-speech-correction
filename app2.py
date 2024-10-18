@@ -3,7 +3,7 @@ import tempfile
 import os
 import json
 from moviepy.editor import VideoFileClip, AudioFileClip
-from openai import OpenAI
+from openai import OpenAI, AuthenticationError
 from pydub import AudioSegment
 import whisperx
 import gc
@@ -11,8 +11,24 @@ import torch
 import numpy as np
 import re
 
-# Initialize the OpenAI client
-client = OpenAI(api_key="your_openai_api_key")
+
+def init_openai_client():
+    if "openai_client" not in st.session_state:
+        api_key = st.text_input("Enter your OpenAI API key:", type="password")
+        if api_key:
+            try:
+                client = OpenAI(api_key=api_key)
+
+                client.models.list()
+                st.session_state.openai_client = client
+                st.success("API key is valid!")
+            except AuthenticationError:
+                st.error("Invalid API key. Please check and try again.")
+            except Exception as e:
+                st.error(f"An error occurred: {str(e)}")
+        else:
+            st.warning("Please enter your OpenAI API key.")
+    return st.session_state.get("openai_client")
 
 
 def transcribe_audio(audio_file_path):
@@ -56,6 +72,7 @@ def transcribe_audio(audio_file_path):
 
 
 def correct_text(text, words_with_timestamps):
+    client = st.session_state.openai_client
     response = client.chat.completions.create(
         model="gpt-4",
         messages=[
@@ -81,32 +98,32 @@ def correct_text(text, words_with_timestamps):
             {
                 "role": "user",
                 "content": f"""Please adjust the timestamps for the corrected text while maintaining the original pacing. Follow these guidelines:
-1. Match each word in the corrected text to its corresponding word in the original text.
-2. Adjust timestamps to ensure natural pacing and prevent word overlaps.
-3. Allow for brief, natural pauses between sentences and phrases.
-4. Ensure each word has a duration appropriate for its length and complexity.
-5. Timestamps should be precise to three decimal places.
+                    1. Match each word in the corrected text to its corresponding word in the original text.
+                    2. Adjust timestamps to ensure natural pacing and prevent word overlaps.
+                    3. Allow for brief, natural pauses between sentences and phrases.
+                    4. Ensure each word has a duration appropriate for its length and complexity.
+                    5. Timestamps should be precise to three decimal places.
 
-Original text and timestamps:
-{text}
-{words_with_timestamps}
+                    Original text and timestamps:
+                    {text}
+                    {words_with_timestamps}
 
-Corrected text:
-{corrected_text}
+                    Corrected text:
+                    {corrected_text}
 
-Please provide the output in the following JSON format:
-{{
-    "text": "corrected text with punctuation",
-    "words": [
-        {{
-            "word": "word",
-            "start": start_time_in_seconds,
-            "end": end_time_in_seconds
-        }},
-        ...
-    ]
-}}
-""",
+                    Please provide the output in the following JSON format:
+                    {{
+                        "text": "corrected text with punctuation",
+                        "words": [
+                            {{
+                                "word": "word",
+                                "start": start_time_in_seconds,
+                                "end": end_time_in_seconds
+                            }},
+                            ...
+                        ]
+                    }}
+                """,
             },
         ],
     )
@@ -141,6 +158,7 @@ def generate_speech_with_target_duration(
 
 
 def text_to_speech_and_adjust(corrected_text, adjusted_words_with_timestamps):
+    client = st.session_state.openai_client
     sentences = re.split(r"(?<=[.!?])\s+", corrected_text)
     sentence_groups = []
     current_sentence = []
@@ -167,7 +185,6 @@ def text_to_speech_and_adjust(corrected_text, adjusted_words_with_timestamps):
         sentence_audio, temp_audio_path = generate_speech_with_target_duration(
             client, sentence, target_duration
         )
-        st.audio(temp_audio_path)
 
         sentence_audio = sentence_audio.fade_out(50)
         final_audio = final_audio.overlay(sentence_audio, position=start_ms)
@@ -225,6 +242,11 @@ def replace_audio(video_path, adjusted_audio):
 def main():
     st.title("Video Audio Transcription, Correction, and Replacement PoC")
 
+    client = init_openai_client()
+
+    if not client:
+        return
+
     uploaded_file = st.file_uploader("Choose a video file", type=["mp4", "avi", "mov"])
 
     if uploaded_file is not None:
@@ -258,6 +280,8 @@ def main():
 
                 st.success("Video processing complete!")
                 st.video(output_video_path)
+
+                st.text("Please try again if quality is bad")
 
                 os.unlink(video_path)
                 os.unlink(audio_path)
