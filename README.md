@@ -1,5 +1,12 @@
 # Video Audio Transcription, Correction, and Replacement
 
+
+
+https://github.com/user-attachments/assets/28f435d9-c6aa-4300-a971-c961f449ebc4
+
+
+
+
 This project is a Streamlit application that processes video files by transcribing the audio, correcting the transcription, and replacing the original audio with an improved version. Here's a detailed breakdown of the process and code:
 
 ## Main Features
