@@ -174,7 +174,7 @@ def generate_speech_with_target_duration(
 
     for _ in range(max_attempts):
         response = client.audio.speech.create(
-            model="tts-1-hd", voice="nova", input=sentence, speed=current_speed
+            model="tts-1-hd", voice="alloy", input=sentence, speed=current_speed
         )
         temp_audio_path = tempfile.mktemp(suffix=".mp3")
         response.stream_to_file(temp_audio_path)
